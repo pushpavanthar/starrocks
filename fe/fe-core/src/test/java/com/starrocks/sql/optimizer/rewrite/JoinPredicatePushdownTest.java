@@ -181,32 +181,7 @@ public class JoinPredicatePushdownTest extends PlanTestBase {
                 "     PREAGGREGATION: ON\n" +
                 "     PREDICATES: 4: v4 > 2");
     }
-<<<<<<< HEAD
-=======
-
-    @Test
-    public void testFunctionDerivedForAsof() throws Exception {
-        String sql = "select * from t0 asof join t1 on v1 = v4 and v2 > v5 where all_match(x -> x > 1, [v1]) and v1 > 2";
-        String plan = getFragmentPlan(sql);
-        assertContains(plan, "3:SELECT\n" +
-                "  |  predicates: all_match(array_map(<slot 7> -> <slot 7> > 1, [4: v4]))\n" +
-                "  |  \n" +
-                "  2:OlapScanNode\n" +
-                "     TABLE: t1\n" +
-                "     PREAGGREGATION: ON\n" +
-                "     PREDICATES: 4: v4 > 2");
-
-        sql = "select * from t0 asof join t1 on v1 = v4 and v2 > v5 join t2 on v4 = v7 " +
-                "where all_match(x -> x > 1, [v1]) and v7 > 2";
-        plan = getFragmentPlan(sql);
-        assertContains(plan, "  4:SELECT\n" +
-                "  |  predicates: all_match(array_map(<slot 10> -> <slot 10> > 1, [4: v4]))\n" +
-                "  |  \n" +
-                "  3:OlapScanNode\n" +
-                "     TABLE: t1\n" +
-                "     PREAGGREGATION: ON\n" +
-                "     PREDICATES: 4: v4 > 2");
-    }
+    
     @Test
     public void testJoinORToUnionWithCTEAndMultiDistinct() throws Exception {
         connectContext.getSessionVariable().setEnabledRewriteOrToUnionAllJoin(true);
@@ -241,5 +216,4 @@ public class JoinPredicatePushdownTest extends PlanTestBase {
             connectContext.getSessionVariable().setEnabledRewriteOrToUnionAllJoin(false);
         }
     }
->>>>>>> 96cfcf9100 ([BugFix] Don't rewrite null-safe-equal join OR-disjuncts to UNION ALL (#75038))
 }
