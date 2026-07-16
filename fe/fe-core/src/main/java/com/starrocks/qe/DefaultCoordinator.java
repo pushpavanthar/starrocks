@@ -86,6 +86,8 @@ import com.starrocks.qe.scheduler.dag.FragmentInstanceExecState;
 import com.starrocks.qe.scheduler.dag.JobSpec;
 import com.starrocks.qe.scheduler.dag.PhasedExecutionSchedule;
 import com.starrocks.qe.scheduler.dag.SingleNodeSchedule;
+import com.starrocks.qe.scheduler.elastic.ElasticScanEligibility;
+import com.starrocks.qe.scheduler.elastic.ElasticScanScheduler;
 import com.starrocks.qe.scheduler.slot.DeployState;
 import com.starrocks.qe.scheduler.slot.LogicalSlot;
 import com.starrocks.rpc.RpcException;
@@ -160,6 +162,12 @@ public class DefaultCoordinator extends Coordinator {
     private PQueryStatistics auditStatistics;
 
     private final QueryRuntimeProfile queryProfile;
+
+    /**
+     * Non-null only when the query may add scan instances on compute nodes that join the
+     * warehouse mid-query (elastic scan). Driven from the incremental scan-range rounds.
+     */
+    private ElasticScanScheduler elasticScanScheduler = null;
 
     private ResultReceiver receiver;
     private int numReceivedRows = 0;
@@ -519,6 +527,15 @@ public class DefaultCoordinator extends Coordinator {
 
         prepareProfile();
 
+        List<ExecutionFragment> elasticFragments =
+                ElasticScanEligibility.findEligibleFragments(connectContext, jobSpec, executionDAG);
+        if (!elasticFragments.isEmpty()) {
+            elasticScanScheduler = new ElasticScanScheduler(jobSpec, executionDAG, queryProfile,
+                    coordinatorPreprocessor::captureCurrentWorkers,
+                    connectContext.getSessionVariable().getConnectorIncrementalScanRangeNumber(),
+                    elasticFragments);
+        }
+
         // if all the instance are in the same worker, we can send them all in once
         // but only after prepareExec() we can know the worker number
         maybeChangeScheduler();
@@ -710,6 +727,11 @@ public class DefaultCoordinator extends Coordinator {
         if (!jobSpec.isIncrementalScanRanges()) {
             return updatedStates;
         }
+        // Register instances for workers that joined mid-query BEFORE this round's assignment,
+        // so the new instances receive their share of ranges and the has_more sentinel.
+        if (elasticScanScheduler != null) {
+            elasticScanScheduler.prepareInstances();
+        }
         for (DeployState state : deployStates) {
 
             Set<PlanFragmentId> planFragmentIds = new HashSet<>();
@@ -753,6 +775,19 @@ public class DefaultCoordinator extends Coordinator {
                     execState.setRequestToDeploy(request);
                     res.add(execState);
                 }
+            }
+        }
+        // Append the instances registered this round: their first request carries the scan ranges
+        // assigned above plus the has_more sentinel. The caller deploys them together with their
+        // peers' incremental requests, and the returned states feed the next round, so the new
+        // instances keep receiving batches.
+        if (elasticScanScheduler != null) {
+            List<FragmentInstanceExecState> lateExecutions = elasticScanScheduler.harvestPreparedExecStates(deployer);
+            if (!lateExecutions.isEmpty()) {
+                if (updatedStates.isEmpty()) {
+                    updatedStates.add(new DeployState());
+                }
+                updatedStates.get(0).getThreeStageExecutionsToDeploy().get(1).addAll(lateExecutions);
             }
         }
         return updatedStates;

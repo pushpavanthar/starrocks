@@ -229,6 +229,19 @@ public class CoordinatorPreprocessor {
     }
 
     /**
+     * Captures the CURRENT alive workers of this query's compute resource. Unlike the prepare-time
+     * snapshot, repeated calls observe membership changes; used to find compute nodes that joined
+     * after the query started (elastic scan).
+     */
+    public WorkerProvider captureCurrentWorkers() {
+        SessionVariable sessionVariable = connectContext.getSessionVariable();
+        return workerProviderFactory.captureAvailableWorkers(
+                GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo(),
+                sessionVariable.isPreferComputeNode(), sessionVariable.getUseComputeNodes(),
+                sessionVariable.getComputationFragmentSchedulingPolicy(), jobSpec.getComputeResource());
+    }
+
+    /**
      * Reset state of all the fragments set in Coordinator, when retrying the same query with the fragments.
      */
     private void resetExec() {

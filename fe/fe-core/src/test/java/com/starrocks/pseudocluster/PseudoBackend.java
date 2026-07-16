@@ -81,6 +81,8 @@ import com.starrocks.proto.PTriggerProfileReportResult;
 import com.starrocks.proto.PUniqueId;
 import com.starrocks.proto.PUpdateFailPointStatusRequest;
 import com.starrocks.proto.PUpdateFailPointStatusResponse;
+import com.starrocks.proto.PUpdateExchangeSendersRequest;
+import com.starrocks.proto.PUpdateExchangeSendersResult;
 import com.starrocks.proto.PUpdateTransactionStateRequest;
 import com.starrocks.proto.PUpdateTransactionStateResponse;
 import com.starrocks.proto.PublishLogVersionBatchRequest;
@@ -1116,6 +1118,15 @@ public class PseudoBackend {
         @Override
         public Future<PUpdateTransactionStateResponse> updateTransactionState(PUpdateTransactionStateRequest request) {
             throw new org.apache.commons.lang.NotImplementedException("TODO");
+        }
+
+        @Override
+        public Future<PUpdateExchangeSendersResult> updateExchangeSenders(PUpdateExchangeSendersRequest request) {
+            PUpdateExchangeSendersResult result = new PUpdateExchangeSendersResult();
+            StatusPB pStatus = new StatusPB();
+            pStatus.statusCode = 0;
+            result.status = pStatus;
+            return CompletableFuture.completedFuture(result);
         }
     }
 

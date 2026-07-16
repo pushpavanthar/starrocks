@@ -1815,6 +1815,15 @@ public class Config extends ConfigBase {
     public static int max_query_retry_time = 2;
 
     /**
+     * Cluster-level kill switch for elastic scan execution: adding scan-fragment instances on
+     * compute nodes that join the warehouse while a query is running. Both this config and the
+     * session variable enable_elastic_scan_stages must be on to activate. Shared-data only.
+     */
+    @ConfField(mutable = true, comment = "Whether queries may add scan instances on compute nodes " +
+            "that join the warehouse mid-query. Also requires session variable enable_elastic_scan_stages.")
+    public static boolean enable_elastic_scan_execution = false;
+
+    /**
      * In order not to wait too long for create table(index), set a max timeout.
      */
     @ConfField(mutable = true)

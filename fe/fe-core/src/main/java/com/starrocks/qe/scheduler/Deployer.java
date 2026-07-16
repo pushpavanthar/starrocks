@@ -366,6 +366,31 @@ public class Deployer {
         return tFragmentInstanceFactory.createIncrementalScanRanges(instance);
     }
 
+    /**
+     * Creates the exec state for a late-registered instance, carrying the full deploy request
+     * (plan, and the descriptor table when the worker is new to this query). The caller deploys
+     * it through the regular {@link #deployFragments} path together with its peers' incremental
+     * requests, so failures follow the same query-level semantics as any other deploy failure —
+     * by this point the instance's sender is registered on downstream exchanges, so it must not
+     * be silently dropped.
+     */
+    public FragmentInstanceExecState createLateInstanceExecState(FragmentInstance instance) {
+        TDescriptorTable descTable = deployedWorkerIds.contains(instance.getWorkerId())
+                ? emptyDescTable : jobSpec.getDescTable();
+        deployedWorkerIds.add(instance.getWorkerId());
+
+        TExecPlanFragmentParams request = tFragmentInstanceFactory.create(instance, descTable, 0, 0);
+        FragmentInstanceExecState execution = FragmentInstanceExecState.createExecution(
+                jobSpec,
+                instance.getFragmentId(),
+                instance.getExecFragment().getFragmentIndex(),
+                request,
+                instance.getWorker());
+        execution.setFragmentInstance(instance);
+        executionDAG.addExecution(execution);
+        return execution;
+    }
+
     public void deployFragmentsForSingleNode(List<FragmentInstanceExecState> fragmentInstanceExecStates)
             throws RpcException, StarRocksException {
         if (!needDeploy) {

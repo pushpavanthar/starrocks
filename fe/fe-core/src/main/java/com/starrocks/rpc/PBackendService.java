@@ -35,6 +35,8 @@ import com.starrocks.proto.PProxyResult;
 import com.starrocks.proto.PPulsarProxyRequest;
 import com.starrocks.proto.PPulsarProxyResult;
 import com.starrocks.proto.PTriggerProfileReportResult;
+import com.starrocks.proto.PUpdateExchangeSendersRequest;
+import com.starrocks.proto.PUpdateExchangeSendersResult;
 import com.starrocks.proto.PUpdateFailPointStatusRequest;
 import com.starrocks.proto.PUpdateFailPointStatusResponse;
 import com.starrocks.proto.PUpdateTransactionStateRequest;
@@ -100,4 +102,7 @@ public interface PBackendService {
 
     @ProtobufRPC(serviceName = "PInternalService", methodName = "update_transaction_state", onceTalkTimeout = 600000)
     Future<PUpdateTransactionStateResponse> updateTransactionState(PUpdateTransactionStateRequest request);
+
+    @ProtobufRPC(serviceName = "PInternalService", methodName = "update_exchange_senders", onceTalkTimeout = 60000)
+    Future<PUpdateExchangeSendersResult> updateExchangeSenders(PUpdateExchangeSendersRequest request);
 }

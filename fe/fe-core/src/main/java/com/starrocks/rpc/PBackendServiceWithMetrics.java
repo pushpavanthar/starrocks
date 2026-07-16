@@ -34,6 +34,8 @@ import com.starrocks.proto.PProxyResult;
 import com.starrocks.proto.PPulsarProxyRequest;
 import com.starrocks.proto.PPulsarProxyResult;
 import com.starrocks.proto.PTriggerProfileReportResult;
+import com.starrocks.proto.PUpdateExchangeSendersRequest;
+import com.starrocks.proto.PUpdateExchangeSendersResult;
 import com.starrocks.proto.PUpdateFailPointStatusRequest;
 import com.starrocks.proto.PUpdateFailPointStatusResponse;
 import com.starrocks.proto.PUpdateTransactionStateRequest;
@@ -147,5 +149,11 @@ public class PBackendServiceWithMetrics implements PBackendService {
     public Future<PUpdateTransactionStateResponse> updateTransactionState(PUpdateTransactionStateRequest request) {
         increaseMetrics();
         return pBackendService.updateTransactionState(request);
+    }
+
+    @Override
+    public Future<PUpdateExchangeSendersResult> updateExchangeSenders(PUpdateExchangeSendersRequest request) {
+        increaseMetrics();
+        return pBackendService.updateExchangeSenders(request);
     }
 }

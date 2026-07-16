@@ -57,6 +57,8 @@ import com.starrocks.proto.PPulsarProxyRequest;
 import com.starrocks.proto.PPulsarProxyResult;
 import com.starrocks.proto.PTriggerProfileReportResult;
 import com.starrocks.proto.PUniqueId;
+import com.starrocks.proto.PUpdateExchangeSendersRequest;
+import com.starrocks.proto.PUpdateExchangeSendersResult;
 import com.starrocks.proto.PUpdateFailPointStatusRequest;
 import com.starrocks.proto.PUpdateFailPointStatusResponse;
 import com.starrocks.thrift.TExecPlanFragmentParams;
@@ -237,6 +239,19 @@ public class BackendServiceClient {
             return service.fetchDataAsync(request);
         } catch (Throwable e) {
             LOG.warn("fetch data catch a exception, address={}:{}",
+                    address.getHostname(), address.getPort(), e);
+            throw new RpcException(address.hostname, e.getMessage());
+        }
+    }
+
+    public Future<PUpdateExchangeSendersResult> updateExchangeSenders(TNetworkAddress address,
+                                                                      PUpdateExchangeSendersRequest request)
+            throws RpcException {
+        try {
+            final PBackendService service = BrpcProxy.getBackendService(address);
+            return service.updateExchangeSenders(request);
+        } catch (Throwable e) {
+            LOG.warn("update exchange senders catch a exception, address={}:{}",
                     address.getHostname(), address.getPort(), e);
             throw new RpcException(address.hostname, e.getMessage());
         }

@@ -14,6 +14,7 @@
 
 package com.starrocks.qe.scheduler.assignment;
 
+import com.starrocks.common.Config;
 import com.starrocks.common.StarRocksException;
 import com.starrocks.planner.OlapScanNode;
 import com.starrocks.planner.ScanNode;
@@ -22,6 +23,7 @@ import com.starrocks.qe.BackendSelector;
 import com.starrocks.qe.BucketAwareBackendSelector;
 import com.starrocks.qe.ColocatedBackendSelector;
 import com.starrocks.qe.ConnectContext;
+import com.starrocks.qe.ElasticScanBackendSelector;
 import com.starrocks.qe.FragmentScanRangeAssignment;
 import com.starrocks.qe.HDFSBackendSelector;
 import com.starrocks.qe.NoopBackendSelector;
@@ -113,6 +115,15 @@ public class BackendSelectorFactory {
                         colocatedAssignment, isRightOrFullBucketShuffleFragment, workerProvider,
                         sessionVariable.getMaxBucketsPerBeToUseBalancerAssignment());
             } else {
+                // On incremental (reuse) rounds of an elastic scan, spread the batch across the
+                // fragment's current instances by load: replica-driven selection would never route
+                // work to instances added on newly joined nodes, which own no tablets yet. The
+                // first round keeps replica affinity through NormalBackendSelector.
+                if (olapIncrementalScanRanges && !execFragment.getInstances().isEmpty()
+                        && Config.enable_elastic_scan_execution
+                        && sessionVariable.isEnableElasticScanStages()) {
+                    return new ElasticScanBackendSelector(scanNode, locations, assignment, execFragment);
+                }
                 return new NormalBackendSelector(scanNode, locations, assignment, workerProvider, isLoadType,
                         olapIncrementalScanRanges);
             }

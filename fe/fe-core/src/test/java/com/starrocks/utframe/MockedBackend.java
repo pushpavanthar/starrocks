@@ -78,6 +78,8 @@ import com.starrocks.proto.RepairTabletMetadataRequest;
 import com.starrocks.proto.RepairTabletMetadataResponse;
 import com.starrocks.proto.RestoreSnapshotsRequest;
 import com.starrocks.proto.RestoreSnapshotsResponse;
+import com.starrocks.proto.PUpdateExchangeSendersRequest;
+import com.starrocks.proto.PUpdateExchangeSendersResult;
 import com.starrocks.proto.StatusPB;
 import com.starrocks.proto.TabletStatRequest;
 import com.starrocks.proto.TabletStatResponse;
@@ -624,6 +626,17 @@ public class MockedBackend {
         @Override
         public Future<PUpdateTransactionStateResponse> updateTransactionState(PUpdateTransactionStateRequest request) {
             throw new NotImplementedException("TODO");
+        }
+
+        @Override
+        public Future<PUpdateExchangeSendersResult> updateExchangeSenders(PUpdateExchangeSendersRequest request) {
+            return submit(() -> {
+                PUpdateExchangeSendersResult result = new PUpdateExchangeSendersResult();
+                StatusPB pStatus = new StatusPB();
+                pStatus.statusCode = 0;
+                result.status = pStatus;
+                return result;
+            });
         }
     }
 

@@ -21,6 +21,8 @@ import com.starrocks.system.ComputeNode;
 import com.starrocks.thrift.TScanRange;
 import com.starrocks.thrift.TScanRangeParams;
 
+import java.util.Collection;
+
 public interface BackendSelector {
     void computeScanRangeAssignment() throws StarRocksException;
 
@@ -30,11 +32,16 @@ public interface BackendSelector {
      */
     static void appendIncrementalScanRangeSentinel(ScanNode scanNode, WorkerProvider workerProvider,
                                                    FragmentScanRangeAssignment assignment) {
+        appendIncrementalScanRangeSentinel(scanNode, workerProvider.getAllWorkers(), assignment);
+    }
+
+    static void appendIncrementalScanRangeSentinel(ScanNode scanNode, Collection<ComputeNode> workers,
+                                                   FragmentScanRangeAssignment assignment) {
         TScanRangeParams end = new TScanRangeParams();
         end.setScan_range(new TScanRange());
         end.setEmpty(true);
         end.setHas_more(scanNode.hasMoreScanRanges());
-        for (ComputeNode computeNode : workerProvider.getAllWorkers()) {
+        for (ComputeNode computeNode : workers) {
             assignment.put(computeNode.getId(), scanNode.getId().asInt(), end);
         }
     }

@@ -1,0 +1,225 @@
+// Copyright 2021-present StarRocks, Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package com.starrocks.qe.scheduler.elastic;
+
+import com.starrocks.common.util.DebugUtil;
+import com.starrocks.planner.DataStreamSink;
+import com.starrocks.planner.OlapScanNode;
+import com.starrocks.proto.PUniqueId;
+import com.starrocks.proto.PUpdateExchangeSendersRequest;
+import com.starrocks.proto.PUpdateExchangeSendersResult;
+import com.starrocks.qe.scheduler.Deployer;
+import com.starrocks.qe.scheduler.QueryRuntimeProfile;
+import com.starrocks.qe.scheduler.WorkerProvider;
+import com.starrocks.qe.scheduler.dag.ExecutionDAG;
+import com.starrocks.qe.scheduler.dag.ExecutionFragment;
+import com.starrocks.qe.scheduler.dag.FragmentInstance;
+import com.starrocks.qe.scheduler.dag.FragmentInstanceExecState;
+import com.starrocks.qe.scheduler.dag.JobSpec;
+import com.starrocks.rpc.BackendServiceClient;
+import com.starrocks.system.ComputeNode;
+import com.starrocks.thrift.TPlanFragmentDestination;
+import com.starrocks.thrift.TStatusCode;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
+
+/**
+ * Grows eligible scan fragments onto compute nodes that join the warehouse while the query runs.
+ *
+ * <p>Runs on the schedule-task thread, serialized with incremental scan-range assignment — this
+ * serialization is what makes the protocol safe: while the coordinator still holds undelivered
+ * ranges, live scan instances have has_more=true and keep their exchange senders open, so
+ * downstream receivers cannot finish while a sender is being registered.
+ *
+ * <p>An add is best-effort until the sender is registered downstream: registration failures
+ * (old-version BE, receiver gone, timeout) abort the add with compensating unregistrations and
+ * the query continues at its current width. Once the instance is deployed, failures follow the
+ * regular deploy semantics.
+ */
+public class ElasticScanScheduler {
+    private static final Logger LOG = LogManager.getLogger(ElasticScanScheduler.class);
+
+    // ponytail: constants, promote to session variables only if real deployments need tuning.
+    private static final int MAX_ADDED_INSTANCES = 8;
+    private static final int MIN_REMAINING_BATCHES = 2;
+
+    private final JobSpec jobSpec;
+    private final ExecutionDAG dag;
+    private final QueryRuntimeProfile profile;
+    private final Supplier<WorkerProvider> workerCapture;
+    private final int scanRangeBatchSize;
+    private final List<ExecutionFragment> eligibleFragments;
+
+    private final List<FragmentInstance> preparedInstances = new ArrayList<>();
+    private int addedInstances = 0;
+
+    public ElasticScanScheduler(JobSpec jobSpec, ExecutionDAG dag, QueryRuntimeProfile profile,
+                                Supplier<WorkerProvider> workerCapture, int scanRangeBatchSize,
+                                List<ExecutionFragment> eligibleFragments) {
+        this.jobSpec = jobSpec;
+        this.dag = dag;
+        this.profile = profile;
+        this.workerCapture = workerCapture;
+        this.scanRangeBatchSize = scanRangeBatchSize;
+        this.eligibleFragments = eligibleFragments;
+    }
+
+    /**
+     * Registers instances for newly joined workers, BEFORE the round's scan-range assignment, so
+     * the new instances receive their share of ranges and the has_more sentinel. The instances
+     * are not deployed yet; call {@link #harvestPreparedExecStates(Deployer)} after assignment.
+     */
+    public void prepareInstances() {
+        for (ExecutionFragment fragment : eligibleFragments) {
+            if (addedInstances + preparedInstances.size() >= MAX_ADDED_INSTANCES) {
+                return;
+            }
+            OlapScanNode scanNode = (OlapScanNode) fragment.getScanNodes().iterator().next();
+            if (scanNode.numRemainingScanRanges() < MIN_REMAINING_BATCHES * scanRangeBatchSize) {
+                continue;
+            }
+            for (ComputeNode worker : findNewWorkers(fragment)) {
+                if (addedInstances + preparedInstances.size() >= MAX_ADDED_INSTANCES) {
+                    break;
+                }
+                FragmentInstance late = tryPrepareInstance(fragment, worker);
+                if (late != null) {
+                    preparedInstances.add(late);
+                }
+            }
+        }
+    }
+
+    /**
+     * Creates exec states for the instances prepared this round, carrying their full deploy
+     * requests (which include the scan ranges assigned after {@link #prepareInstances()}). The
+     * caller appends them to the round's deploy state so they are deployed together with their
+     * peers' incremental requests and carried into subsequent rounds.
+     */
+    public List<FragmentInstanceExecState> harvestPreparedExecStates(Deployer deployer) {
+        if (preparedInstances.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<FragmentInstanceExecState> executions = new ArrayList<>(preparedInstances.size());
+        for (FragmentInstance instance : preparedInstances) {
+            executions.add(deployer.createLateInstanceExecState(instance));
+            addedInstances++;
+            LOG.info("elastic scan: added instance {} on worker {} for fragment {} of query {}",
+                    DebugUtil.printId(instance.getInstanceId()), instance.getWorkerId(),
+                    instance.getFragmentId(), DebugUtil.printId(jobSpec.getQueryId()));
+        }
+        preparedInstances.clear();
+        return executions;
+    }
+
+    private List<ComputeNode> findNewWorkers(ExecutionFragment fragment) {
+        Set<Long> currentWorkers = fragment.getInstances().stream()
+                .map(FragmentInstance::getWorkerId)
+                .collect(Collectors.toSet());
+        try {
+            WorkerProvider provider = workerCapture.get();
+            return provider.getAllWorkers().stream()
+                    .filter(worker -> !currentWorkers.contains(worker.getId()))
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            // e.g. the warehouse currently has no alive nodes; nothing to add this round.
+            LOG.debug("elastic scan: capturing workers failed for query {}",
+                    DebugUtil.printId(jobSpec.getQueryId()), e);
+            return Collections.emptyList();
+        }
+    }
+
+    private FragmentInstance tryPrepareInstance(ExecutionFragment fragment, ComputeNode worker) {
+        int beNumber = dag.reserveLateIndexInJob();
+        if (!registerSenders(fragment, beNumber)) {
+            unregisterSenders(fragment, beNumber);
+            return null;
+        }
+        FragmentInstance late = dag.registerLateInstance(fragment, worker, beNumber);
+        if (!profile.attachInstance(late.getInstanceId())) {
+            // The query already finished; nothing further will be scheduled for it.
+            unregisterSenders(fragment, beNumber);
+            return null;
+        }
+        return late;
+    }
+
+    private boolean registerSenders(ExecutionFragment fragment, int beNumber) {
+        int exchNodeId = ((DataStreamSink) fragment.getPlanFragment().getSink()).getExchNodeId().asInt();
+        long timeoutMs = jobSpec.getQueryOptions().getQuery_delivery_timeout() * 1000L;
+        List<Future<PUpdateExchangeSendersResult>> futures = new ArrayList<>();
+        try {
+            for (TPlanFragmentDestination dest : fragment.getDestinations()) {
+                futures.add(BackendServiceClient.getInstance().updateExchangeSenders(
+                        dest.getBrpc_server(), buildRequest(dest, exchNodeId, beNumber, false)));
+            }
+            for (Future<PUpdateExchangeSendersResult> future : futures) {
+                PUpdateExchangeSendersResult result = future.get(timeoutMs, TimeUnit.MILLISECONDS);
+                if (result.status == null || result.status.statusCode == null
+                        || result.status.statusCode != TStatusCode.OK.getValue()) {
+                    LOG.warn("elastic scan: sender registration rejected, be_number={} query={} status={}",
+                            beNumber, DebugUtil.printId(jobSpec.getQueryId()),
+                            result.status == null ? "null" : result.status.errorMsgs);
+                    return false;
+                }
+            }
+            return true;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        } catch (Exception e) {
+            // Includes method-not-found from an old-version BE: elastic is opportunistic.
+            LOG.warn("elastic scan: sender registration failed, be_number={} query={}",
+                    beNumber, DebugUtil.printId(jobSpec.getQueryId()), e);
+            return false;
+        }
+    }
+
+    private void unregisterSenders(ExecutionFragment fragment, int beNumber) {
+        // Best-effort compensation; unregistering a never-registered sender is a no-op on the BE.
+        int exchNodeId = ((DataStreamSink) fragment.getPlanFragment().getSink()).getExchNodeId().asInt();
+        for (TPlanFragmentDestination dest : fragment.getDestinations()) {
+            try {
+                BackendServiceClient.getInstance().updateExchangeSenders(
+                        dest.getBrpc_server(), buildRequest(dest, exchNodeId, beNumber, true));
+            } catch (Exception e) {
+                LOG.warn("elastic scan: sender unregistration failed, be_number={} query={}",
+                        beNumber, DebugUtil.printId(jobSpec.getQueryId()), e);
+            }
+        }
+    }
+
+    private static PUpdateExchangeSendersRequest buildRequest(TPlanFragmentDestination dest, int exchNodeId,
+                                                              int beNumber, boolean unregister) {
+        PUpdateExchangeSendersRequest request = new PUpdateExchangeSendersRequest();
+        PUniqueId finstId = new PUniqueId();
+        finstId.hi = dest.getFragment_instance_id().getHi();
+        finstId.lo = dest.getFragment_instance_id().getLo();
+        request.finstId = finstId;
+        request.nodeId = exchNodeId;
+        request.beNumber = beNumber;
+        request.unregister = unregister;
+        return request;
+    }
+}
