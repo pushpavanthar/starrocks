@@ -654,6 +654,13 @@ Used for MySQL client compatibility. No practical usage.
 * **Default**: false, which means this feature is disabled.
 * **Introduced in**: v2.5
 
+### enable_elastic_scan_stages
+
+* **Description**: Whether queries in this session may add scan-fragment instances on compute nodes that join the warehouse while the query is running (elastic scan). Takes effect only in shared-data clusters, together with the FE configuration item `enable_elastic_scan_execution` and the session variable `enable_olap_incremental_scan_ranges`. Only plain scans on cloud-native tables (without colocation, bucket-shuffle, or replicated joins) that feed a non-merging exchange are eligible.
+* **Default**: false
+* **Data Type**: boolean
+* **Introduced in**: -
+
 ### enable_eliminate_agg
 
 * **Description**: Controls optimizer transformations that remove or simplify aggregation operators when it is safe to do so. When enabled, the planner applies rules (EliminateAggRule and EliminateAggFunctionRule) to replace a LogicalAggregationOperator with a LogicalProjectOperator (and optionally a LogicalFilterOperator) in two cases:
@@ -858,6 +865,13 @@ If a Join (other than Broadcast Join and Replicated Join) has multiple equi-join
 * **Default**: `false`
 * **Data Type**: boolean
 * **Introduced in**: v3.2.0
+
+### enable_olap_incremental_scan_ranges
+
+* **Description**: Whether scan ranges of OLAP scans on cloud-native tables are delivered to running fragment instances in batches (incremental delivery) instead of all at once at deploy time. The batch size reuses `connector_incremental_scan_ranges_size`. Takes effect only in shared-data clusters, for plain scans without colocation, bucket-shuffle, or replicated joins.
+* **Default**: false
+* **Data Type**: boolean
+* **Introduced in**: -
 
 ### enable_optimize_skew_join_v1
 

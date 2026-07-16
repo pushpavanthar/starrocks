@@ -263,6 +263,15 @@ ADMIN SET FRONTEND CONFIG ("key" = "value");
 - 描述: 是否支持 DECIMAL V3 数据类型。
 - 引入版本: -
 
+### `enable_elastic_scan_execution`
+
+- 默认值: false
+- 类型: Boolean
+- 单位: -
+- 是否可变: Yes
+- 描述: 是否允许查询在运行期间将扫描 Fragment 实例扩展到新加入仓库的计算节点上（弹性扫描）。集群级开关，每个查询还需同时开启会话变量 `enable_elastic_scan_stages` 和 `enable_olap_incremental_scan_ranges`。仅在存算分离集群中生效。
+- 引入版本: -
+
 ### `enable_experimental_mv`
 
 - 默认值: true

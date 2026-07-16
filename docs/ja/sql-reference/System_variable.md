@@ -554,6 +554,12 @@ MySQL クライアント互換性のために使用されます。実際の用�
 * **デフォルト**: false、つまりこの機能は無効です。
 * **導入バージョン**: v2.5
 
+### enable_elastic_scan_stages
+
+* **説明**: このセッションのクエリが、実行中にウェアハウスへ新しく参加したコンピュートノードにスキャンフラグメントインスタンスを追加できるかどうか（エラスティックスキャン）。共有データクラスタでのみ有効で、FE 設定項目 `enable_elastic_scan_execution` とセッション変数 `enable_olap_incremental_scan_ranges` の両方を有効にする必要があります。マージしない Exchange に出力するクラウドネイティブテーブルの単純スキャン（Colocate・Bucket Shuffle・Replicated Join を含まない）のみが対象です。
+* **デフォルト**: false
+* **導入バージョン**: -
+
 ### enable_force_rule_based_mv_rewrite
 
 * **説明**: オプティマイザのルールベース最適化フェーズで複数テーブルに対するクエリの書き換えを有効にするかどうか。この機能を有効にすると、クエリ書き換えの堅牢性が向上します。ただし、クエリがマテリアライズドビューを見逃した場合、時間消費が増加します。
@@ -723,6 +729,12 @@ StarRocks は 2 種類の RF を提供します：ローカル RF とグロー�
 * **デフォルト**: `false`
 * **データ型**: boolean
 * **導入バージョン**: v3.2.0
+
+### enable_olap_incremental_scan_ranges
+
+* **説明**: クラウドネイティブテーブルの OLAP スキャンの Scan Range を、デプロイ時に一括ではなく、実行中のフラグメントインスタンスへバッチ（増分）で配信するかどうか。バッチサイズは `connector_incremental_scan_ranges_size` を再利用します。共有データクラスタで、Colocate・Bucket Shuffle・Replicated Join を含まない単純スキャンに対してのみ有効です。
+* **デフォルト**: false
+* **導入バージョン**: -
 
 ### enable_parallel_merge
 

@@ -243,6 +243,15 @@ public class QueryRuntimeProfile {
         return profileDoneSignal != null && profileDoneSignal.addMark(instanceId, MARKED_COUNT_DOWN_VALUE);
     }
 
+    /**
+     * Records elastic-scan activity (instances added on newly joined workers, aborted adds) in
+     * the query profile, so per-query elasticity is observable in EXPLAIN ANALYZE / web profile.
+     */
+    public void updateElasticScanInfo(int instancesAdded, int addsAborted) {
+        queryProfile.addInfoString("ElasticScanInstancesAdded", String.valueOf(instancesAdded));
+        queryProfile.addInfoString("ElasticScanAddsAborted", String.valueOf(addsAborted));
+    }
+
     public void attachExecutionProfiles(Collection<FragmentInstanceExecState> executions) {
         Map<Integer, List<RuntimeProfile>> profiles = Maps.newHashMap();
         for (FragmentInstanceExecState execState : executions) {

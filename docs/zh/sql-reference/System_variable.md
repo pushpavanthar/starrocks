@@ -563,6 +563,12 @@ ALTER USER 'jack' SET PROPERTIES ('session.query_timeout' = '600');
 * 默认值：false，表示不开启。
 * 引入版本：v2.5
 
+### enable_elastic_scan_stages
+
+* 描述: 是否允许当前会话中的查询在运行期间将扫描 Fragment 实例扩展到新加入仓库的计算节点上（弹性扫描）。仅在存算分离集群中生效，且需要同时开启 FE 配置项 `enable_elastic_scan_execution` 和会话变量 `enable_olap_incremental_scan_ranges`。仅支持输出到非合并 Exchange 的云原生表普通扫描（不含 Colocate、Bucket Shuffle 或 Replicated Join）。
+* 默认值: false
+* 引入版本: -
+
 ### enable_force_rule_based_mv_rewrite
 
 * 描述：在优化器的 RBO（rule-based optimization）阶段是否针对多表查询启用查询改写。启用此功能将提高查询改写的鲁棒性。但如果查询未命中物化视图，则会增加优化耗时。
@@ -730,6 +736,12 @@ ALTER USER 'jack' SET PROPERTIES ('session.query_timeout' = '600');
 * **默认值**: `false`
 * **数据类型**: boolean
 * **引入版本**: v3.2.0
+
+### enable_olap_incremental_scan_ranges
+
+* 描述: 是否将云原生表 OLAP 扫描的 Scan Range 分批（增量）下发给运行中的 Fragment 实例，而不是在部署时一次性下发。批大小复用 `connector_incremental_scan_ranges_size`。仅在存算分离集群中，对不含 Colocate、Bucket Shuffle 或 Replicated Join 的普通扫描生效。
+* 默认值: false
+* 引入版本: -
 
 ### enable_parallel_merge
 

@@ -259,4 +259,36 @@ public class ElasticScanSchedulerTest extends SchedulerTestBase {
         startScheduling(SQL);
         Assertions.assertTrue(senderRequests.isEmpty());
     }
+
+    @Test
+    public void testNoAddWhenLittleWorkRemains() throws Exception {
+        // A single batch drains the whole scan: the node joins during the seal (final round),
+        // when the remaining work is below the threshold, so no instance is added.
+        mockSharedDataLakeScan();
+        mockSenderRegistration();
+        connectContext.getSessionVariable().setConnectorIncrementalScanRangeNumber(1000);
+        List<TExecPlanFragmentParams> deploys = captureDeploysAndJoinBackendMidQuery();
+
+        startScheduling(SQL);
+
+        Assertions.assertTrue(senderRequests.isEmpty(), events.toString());
+        Assertions.assertTrue(events.stream().noneMatch(e -> e.equals("deploy:" + NEW_BACKEND_ID)));
+        Assertions.assertEquals(LINEITEM_TABLETS, collectTabletIds(deploys).size());
+    }
+
+    @Test
+    public void testProfileRecordsElasticActivity() throws Exception {
+        mockSharedDataLakeScan();
+        mockSenderRegistration();
+        captureDeploysAndJoinBackendMidQuery();
+
+        DefaultCoordinator coordinator = startScheduling(SQL);
+
+        String added = coordinator.getQueryRuntimeProfile().getQueryProfile()
+                .getInfoString("ElasticScanInstancesAdded");
+        Assertions.assertNotNull(added);
+        Assertions.assertTrue(Integer.parseInt(added) >= 1, "added=" + added);
+        Assertions.assertEquals("0", coordinator.getQueryRuntimeProfile().getQueryProfile()
+                .getInfoString("ElasticScanAddsAborted"));
+    }
 }

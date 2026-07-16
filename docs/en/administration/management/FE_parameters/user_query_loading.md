@@ -263,6 +263,15 @@ Starting from version 3.3.0, the system defaults to refreshing one partition at 
 - Description: Whether to support the DECIMAL V3 data type.
 - Introduced in: -
 
+### `enable_elastic_scan_execution`
+
+- Default: false
+- Type: Boolean
+- Unit: -
+- Is mutable: Yes
+- Description: Whether queries may add scan-fragment instances on compute nodes that join the warehouse while the query is running (elastic scan). Cluster-level switch; each query must also enable the session variables `enable_elastic_scan_stages` and `enable_olap_incremental_scan_ranges`. Takes effect only in shared-data clusters.
+- Introduced in: -
+
 ### `enable_experimental_mv`
 
 - Default: true

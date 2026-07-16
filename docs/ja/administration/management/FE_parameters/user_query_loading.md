@@ -254,6 +254,15 @@ ADMIN SET FRONTEND CONFIG ("key" = "value");
 - 説明：DECIMAL V3 データ型をサポートするかどうか。
 - 導入時期：-
 
+### `enable_elastic_scan_execution`
+
+- デフォルト：false
+- タイプ：Boolean
+- 単位：-
+- 変更可能：Yes
+- 説明：クエリが実行中にウェアハウスへ新しく参加したコンピュートノードにスキャンフラグメントインスタンスを追加できるかどうか（エラスティックスキャン）。クラスタレベルのスイッチであり、各クエリではセッション変数 `enable_elastic_scan_stages` と `enable_olap_incremental_scan_ranges` も有効にする必要があります。共有データクラスタでのみ有効です。
+- 導入時期：-
+
 ### `enable_experimental_mv`
 
 - デフォルト：true

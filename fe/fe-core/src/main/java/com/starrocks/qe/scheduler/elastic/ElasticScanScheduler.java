@@ -73,6 +73,7 @@ public class ElasticScanScheduler {
 
     private final List<FragmentInstance> preparedInstances = new ArrayList<>();
     private int addedInstances = 0;
+    private int abortedAdds = 0;
 
     public ElasticScanScheduler(JobSpec jobSpec, ExecutionDAG dag, QueryRuntimeProfile profile,
                                 Supplier<WorkerProvider> workerCapture, int scanRangeBatchSize,
@@ -130,6 +131,7 @@ public class ElasticScanScheduler {
                     instance.getFragmentId(), DebugUtil.printId(jobSpec.getQueryId()));
         }
         preparedInstances.clear();
+        profile.updateElasticScanInfo(addedInstances, abortedAdds);
         return executions;
     }
 
@@ -154,12 +156,15 @@ public class ElasticScanScheduler {
         int beNumber = dag.reserveLateIndexInJob();
         if (!registerSenders(fragment, beNumber)) {
             unregisterSenders(fragment, beNumber);
+            abortedAdds++;
+            profile.updateElasticScanInfo(addedInstances, abortedAdds);
             return null;
         }
         FragmentInstance late = dag.registerLateInstance(fragment, worker, beNumber);
         if (!profile.attachInstance(late.getInstanceId())) {
             // The query already finished; nothing further will be scheduled for it.
             unregisterSenders(fragment, beNumber);
+            abortedAdds++;
             return null;
         }
         return late;
