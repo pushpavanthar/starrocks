@@ -715,7 +715,11 @@ public class DefaultCoordinator extends Coordinator {
         ExecutionFragment rootExecFragment = executionDAG.getRootFragment();
         boolean isLoadType = !(rootExecFragment.getPlanFragment().getSink() instanceof ResultSink);
         if (executionDAG.getWorkerNum() == 1 && jobSpec.supportSingleNodeParallelSchedule() &&
-                scheduler instanceof AllAtOnceExecutionSchedule && !isLoadType && !hasOlapTableSink()) {
+                scheduler instanceof AllAtOnceExecutionSchedule && !isLoadType && !hasOlapTableSink()
+                // An elastic query starts on today's workers (often one) and grows onto CNs that
+                // join mid-flight. SingleNodeSchedule deploys once and skips the incremental loop
+                // that drives the growth, so keep the full schedule whenever elastic is armed.
+                && elasticScanScheduler == null) {
             scheduler = new SingleNodeSchedule();
         }
     }
