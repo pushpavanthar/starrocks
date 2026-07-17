@@ -96,6 +96,21 @@ public class BackendSelectorFactory {
                 return new BucketAwareBackendSelector(scanNode, locations, colocatedAssignment,
                         workerProvider, isRightOrFullBucketShuffleFragment, useIncrementalScanRanges, mode);
             }
+            // On incremental (reuse) rounds of an elastic connector scan, spread the batch across the
+            // fragment's current instances by load (including any added on newly joined CNs). The
+            // captured worker set HDFSBackendSelector routes over never includes a late CN, so it
+            // would otherwise receive no ranges. The first round keeps data-cache affinity through
+            // HDFSBackendSelector; allowUsingBackupNode restricts this to shared-data where any
+            // worker can serve any file.
+            boolean connectorElasticReuse = useIncrementalScanRanges
+                    && sessionVariable.isEnableConnectorIncrementalScanRanges()
+                    && workerProvider.allowUsingBackupNode()
+                    && !execFragment.getInstances().isEmpty()
+                    && Config.enable_elastic_scan_execution
+                    && sessionVariable.isEnableElasticScanStages();
+            if (connectorElasticReuse) {
+                return new ElasticScanBackendSelector(scanNode, locations, assignment, execFragment);
+            }
             return new HDFSBackendSelector(scanNode, locations, assignment, workerProvider,
                     sessionVariable.getForceScheduleLocal(),
                     sessionVariable.getHDFSBackendSelectorScanRangeShuffle(), useIncrementalScanRanges, connectContext);

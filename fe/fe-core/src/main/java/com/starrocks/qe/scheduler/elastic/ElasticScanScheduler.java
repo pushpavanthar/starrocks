@@ -17,6 +17,7 @@ package com.starrocks.qe.scheduler.elastic;
 import com.starrocks.common.util.DebugUtil;
 import com.starrocks.planner.DataStreamSink;
 import com.starrocks.planner.OlapScanNode;
+import com.starrocks.planner.ScanNode;
 import com.starrocks.proto.PUniqueId;
 import com.starrocks.proto.PUpdateExchangeSendersRequest;
 import com.starrocks.proto.PUpdateExchangeSendersResult;
@@ -96,8 +97,8 @@ public class ElasticScanScheduler {
             if (addedInstances + preparedInstances.size() >= MAX_ADDED_INSTANCES) {
                 return;
             }
-            OlapScanNode scanNode = (OlapScanNode) fragment.getScanNodes().iterator().next();
-            if (scanNode.numRemainingScanRanges() < MIN_REMAINING_BATCHES * scanRangeBatchSize) {
+            ScanNode scanNode = fragment.getScanNodes().iterator().next();
+            if (!hasGrowableWork(scanNode)) {
                 continue;
             }
             for (ComputeNode worker : findNewWorkers(fragment)) {
@@ -133,6 +134,19 @@ public class ElasticScanScheduler {
         preparedInstances.clear();
         profile.updateElasticScanInfo(addedInstances, abortedAdds);
         return executions;
+    }
+
+    private boolean hasGrowableWork(ScanNode scanNode) {
+        if (!scanNode.hasMoreScanRanges()) {
+            return false;
+        }
+        // OLAP exposes an exact remaining count, so skip growing near the end of delivery. Connector
+        // sources (Iceberg/Hive) are streaming with no count; hasMoreScanRanges() is the only signal.
+        if (scanNode instanceof OlapScanNode) {
+            return ((OlapScanNode) scanNode).numRemainingScanRanges()
+                    >= (long) MIN_REMAINING_BATCHES * scanRangeBatchSize;
+        }
+        return true;
     }
 
     private List<ComputeNode> findNewWorkers(ExecutionFragment fragment) {

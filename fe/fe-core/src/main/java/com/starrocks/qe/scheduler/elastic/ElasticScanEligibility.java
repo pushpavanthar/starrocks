@@ -47,7 +47,8 @@ public final class ElasticScanEligibility {
         SessionVariable sessionVariable = context.getSessionVariable();
         if (!Config.enable_elastic_scan_execution
                 || !sessionVariable.isEnableElasticScanStages()
-                || !sessionVariable.isEnableOlapIncrementalScanRanges()
+                || (!sessionVariable.isEnableOlapIncrementalScanRanges()
+                        && !sessionVariable.isEnableConnectorIncrementalScanRanges())
                 // The phased scheduler counts scheduling instances per fragment at prepare;
                 // a late instance's finish would corrupt that accounting. Follow-up.
                 || sessionVariable.enablePhasedScheduler()
@@ -67,10 +68,19 @@ public final class ElasticScanEligibility {
     }
 
     private static boolean isEligibleFragment(ExecutionFragment fragment) {
-        // A single plain OLAP scan; colocated/bucket/replicated/local-native scans never arm
-        // incremental delivery, so they self-exclude at runtime through hasMoreScanRanges().
+        // A single plain scan that routes through NormalBackendSelector (OLAP lake) or
+        // HDFSBackendSelector (connector, e.g. Iceberg/Hive). Colocated/bucket scans use a fixed
+        // per-bucket layout that cannot grow, so they self-exclude here and at runtime.
         Collection<ScanNode> scanNodes = fragment.getScanNodes();
-        if (scanNodes.size() != 1 || !(scanNodes.iterator().next() instanceof OlapScanNode)) {
+        if (scanNodes.size() != 1) {
+            return false;
+        }
+        ScanNode scanNode = scanNodes.iterator().next();
+        boolean growableScan = (scanNode instanceof OlapScanNode)
+                || (scanNode.isConnectorScanNode()
+                        && !fragment.isColocated()
+                        && !fragment.isLocalBucketShuffleJoin());
+        if (!growableScan) {
             return false;
         }
 
