@@ -28,6 +28,7 @@ import com.starrocks.qe.scheduler.dag.JobSpec;
 import com.starrocks.sql.common.QueryDebugOptions;
 import com.starrocks.thrift.InternalServiceVersion;
 import com.starrocks.thrift.TAdaptiveDopParam;
+import com.starrocks.thrift.TCloudConfiguration;
 import com.starrocks.thrift.TArrowFlightSQLVersion;
 import com.starrocks.thrift.TDescriptorTable;
 import com.starrocks.thrift.TExecPlanFragmentParams;
@@ -43,6 +44,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 public class TFragmentInstanceFactory {
     private final ConnectContext context;
@@ -102,6 +104,13 @@ public class TFragmentInstanceFactory {
         result.params.setPer_node_scan_ranges(instance.getNode2ScanRanges());
         result.params.setNode_to_per_driver_seq_scan_ranges(instance.getNode2DriverSeqToScanRanges());
         result.params.setPer_exch_num_senders(new HashMap<>());
+        // Carry any freshly re-vended cloud credentials to the BE so a long connector scan can refresh
+        // a vended token that would otherwise expire mid-query.
+        Map<Integer, TCloudConfiguration> refreshedCloudConfigs =
+                instance.getExecFragment().getRefreshedNodeCloudConfigs();
+        if (refreshedCloudConfigs != null && !refreshedCloudConfigs.isEmpty()) {
+            result.params.setNode_to_cloud_configuration(refreshedCloudConfigs);
+        }
         return result;
     }
 

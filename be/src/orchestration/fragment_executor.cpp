@@ -46,6 +46,7 @@
 #include "exec/exec_factory.h"
 #include "exec/hash_join_node.h"
 #include "exec/lookup_node.h"
+#include "connector/hive/hive_connector.h"
 #include "exec/olap_scan_node.h"
 #include "exec/pipeline/adaptive/collect_stats_event.h"
 #include "exec/pipeline/fragment_context.h"
@@ -53,7 +54,9 @@
 #include "exec/pipeline/pipeline_builder_operators.h"
 #include "exec/pipeline/pipeline_driver_instantiator.h"
 #include "exec/pipeline/query_context.h"
+#include "exec/connector_scan_node.h"
 #include "exec/pipeline/scan/morsel_queue_factory.h"
+#include "exec/pipeline/scan/scan_operator.h"
 #include "exec/pipeline/schedule/timeout_tasks.h"
 #include "exec/pipeline/sink/result_sink_operator.h"
 #include "exec/runtime/fragment_context_manager.h"
@@ -1151,6 +1154,30 @@ Status FragmentExecutor::append_incremental_scan_ranges(ExecEnv* exec_env, const
         if (closed_scan_nodes.size() > 0) {
             response->__set_closed_scan_nodes(closed_scan_nodes);
         }
+    }
+
+    // Apply any freshly re-vended cloud credentials to the matching connector scan providers, so
+    // subsequent file opens on this instance use the new token instead of the expired plan-time one.
+    if (params.__isset.node_to_cloud_configuration && !params.node_to_cloud_configuration.empty()) {
+        fragment_ctx->iterate_pipeline([&](Pipeline* pipeline) {
+            auto* scan_factory = dynamic_cast<pipeline::ScanOperatorFactory*>(pipeline->source_operator_factory());
+            if (scan_factory == nullptr) {
+                return;
+            }
+            auto cc_iter = params.node_to_cloud_configuration.find(scan_factory->plan_node_id());
+            if (cc_iter == params.node_to_cloud_configuration.end()) {
+                return;
+            }
+            auto* connector_scan_node = dynamic_cast<ConnectorScanNode*>(scan_factory->scan_node());
+            if (connector_scan_node == nullptr) {
+                return;
+            }
+            auto* hive_provider =
+                    dynamic_cast<connector::HiveDataSourceProvider*>(connector_scan_node->data_source_provider());
+            if (hive_provider != nullptr) {
+                hive_provider->set_refreshed_cloud_configuration(cc_iter->second);
+            }
+        });
     }
 
     // notify all source

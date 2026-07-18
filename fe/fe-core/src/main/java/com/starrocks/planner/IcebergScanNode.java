@@ -31,7 +31,13 @@ import com.starrocks.connector.iceberg.IcebergGetRemoteFilesParams;
 import com.starrocks.connector.iceberg.IcebergMORParams;
 import com.starrocks.connector.iceberg.IcebergRemoteSourceTrigger;
 import com.starrocks.connector.iceberg.IcebergTableMORParams;
+import com.google.common.collect.Lists;
+import com.starrocks.catalog.Table;
 import com.starrocks.connector.iceberg.IcebergUtil;
+import com.starrocks.credential.gcp.GCPCloudConfigurationProvider;
+import com.starrocks.qe.ConnectContext;
+import com.starrocks.server.MetadataMgr;
+import com.starrocks.thrift.TCloudConfiguration;
 import com.starrocks.connector.iceberg.QueueIcebergRemoteFileInfoSource;
 import com.starrocks.connector.iceberg.cost.IcebergMetricsReporter;
 import com.starrocks.credential.CloudConfiguration;
@@ -234,6 +240,60 @@ public class IcebergScanNode extends ScanNode {
 
     public void setCloudConfiguration(CloudConfiguration cloudConfiguration) {
         this.cloudConfiguration = cloudConfiguration;
+    }
+
+    public CloudConfiguration getCloudConfiguration() {
+        return cloudConfiguration;
+    }
+
+    /**
+     * For a long-running scan whose vended cloud credentials (e.g. a GCP access token) would expire
+     * mid-query, re-vend a fresh credential once the current one is within {@code refreshWindowMs} of
+     * expiry, and return it as thrift for delivery to the BE on an incremental scan-range batch.
+     * Returns null when there is no vended token, it is not near expiry, or a refresh is unavailable.
+     * Reloading the table produces a fresh short-lived token in the native table's FileIO properties.
+     */
+    public TCloudConfiguration refreshVendedCloudConfigurationIfNearExpiry(long refreshWindowMs) {
+        if (cloudConfiguration == null) {
+            return null;
+        }
+        TCloudConfiguration current = new TCloudConfiguration();
+        cloudConfiguration.toThrift(current);
+        String expiration = current.getCloud_properties() == null ? null
+                : current.getCloud_properties().get(GCPCloudConfigurationProvider.TOKEN_EXPIRATION_KEY);
+        if (expiration == null) {
+            return null;
+        }
+        long expiryMs;
+        try {
+            expiryMs = Long.parseLong(expiration);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+        if (System.currentTimeMillis() + refreshWindowMs < expiryMs) {
+            return null;
+        }
+        try {
+            MetadataMgr metadataMgr = GlobalStateMgr.getCurrentState().getMetadataMgr();
+            metadataMgr.refreshTable(icebergTable.getCatalogName(), icebergTable.getCatalogDBName(),
+                    icebergTable, Lists.newArrayList(), false);
+            Table refreshed = metadataMgr.getTable(new ConnectContext(), icebergTable.getCatalogName(),
+                    icebergTable.getCatalogDBName(), icebergTable.getCatalogTableName());
+            if (!(refreshed instanceof IcebergTable)) {
+                return null;
+            }
+            CloudConfiguration fresh =
+                    IcebergUtil.getVendedCloudConfiguration(icebergTable.getCatalogName(), (IcebergTable) refreshed);
+            this.cloudConfiguration = fresh;
+            TCloudConfiguration result = new TCloudConfiguration();
+            fresh.toThrift(result);
+            return result;
+        } catch (Exception e) {
+            // Best-effort: a failed re-vend just leaves the current token; the scan continues.
+            LOG.warn("failed to refresh vended cloud configuration for table {}",
+                    icebergTable.getCatalogTableName(), e);
+            return null;
+        }
     }
 
     public void setUsedForDelete(boolean usedForDelete) {

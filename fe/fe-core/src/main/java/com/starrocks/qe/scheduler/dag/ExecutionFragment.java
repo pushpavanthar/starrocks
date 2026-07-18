@@ -37,6 +37,7 @@ import com.starrocks.thrift.TEsScanRange;
 import com.starrocks.thrift.THdfsScanRange;
 import com.starrocks.thrift.TInternalScanRange;
 import com.starrocks.thrift.TPlanFragmentDestination;
+import com.starrocks.thrift.TCloudConfiguration;
 import com.starrocks.thrift.TRuntimeFilterParams;
 import com.starrocks.thrift.TScanRangeParams;
 
@@ -76,6 +77,11 @@ public class ExecutionFragment {
 
     private final FragmentScanRangeAssignment scanRangeAssignment;
     private ColocatedBackendSelector.Assignment colocatedAssignment = null;
+
+    // Freshly re-vended cloud credentials (scan-node-id -> config) computed once per incremental
+    // deploy round, carried to the BE so a long connector scan can refresh a vended token that would
+    // otherwise expire mid-query. Null when nothing needs refreshing this round.
+    private volatile Map<Integer, TCloudConfiguration> refreshedNodeCloudConfigs = null;
 
     public static class BucketSeqAssignment {
         public List<Integer> bucketSeqToInstance;
@@ -132,6 +138,14 @@ public class ExecutionFragment {
 
     public PlanFragmentId getFragmentId() {
         return planFragment.getFragmentId();
+    }
+
+    public void setRefreshedNodeCloudConfigs(Map<Integer, TCloudConfiguration> refreshedNodeCloudConfigs) {
+        this.refreshedNodeCloudConfigs = refreshedNodeCloudConfigs;
+    }
+
+    public Map<Integer, TCloudConfiguration> getRefreshedNodeCloudConfigs() {
+        return refreshedNodeCloudConfigs;
     }
 
     public Collection<ScanNode> getScanNodes() {

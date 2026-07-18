@@ -65,6 +65,7 @@ import com.starrocks.datacache.DataCacheSelectMetrics;
 import com.starrocks.metric.MetricRepo;
 import com.starrocks.mysql.MysqlCommand;
 import com.starrocks.planner.DescriptorTable;
+import com.starrocks.planner.IcebergScanNode;
 import com.starrocks.planner.OlapTableSink;
 import com.starrocks.planner.PlanFragment;
 import com.starrocks.planner.PlanFragmentId;
@@ -95,6 +96,7 @@ import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.LoadPlanner;
 import com.starrocks.sql.plan.ExecPlan;
 import com.starrocks.system.ComputeNode;
+import com.starrocks.thrift.TCloudConfiguration;
 import com.starrocks.thrift.TDescriptorTable;
 import com.starrocks.thrift.TExecPlanFragmentParams;
 import com.starrocks.thrift.TLoadJobType;
@@ -756,6 +758,7 @@ public class DefaultCoordinator extends Coordinator {
                 }
                 if (hasMoreScanRanges) {
                     coordinatorPreprocessor.assignIncrementalScanRangesToFragmentInstances(fragment);
+                    maybeRefreshVendedCredentials(fragment);
                     updatedPlanFragmentIds.add(fragmentId);
                 }
             }
@@ -795,6 +798,34 @@ public class DefaultCoordinator extends Coordinator {
             }
         }
         return updatedStates;
+    }
+
+    // ponytail: 60s refresh window covers FE/BE clock skew + batch delivery latency; widen only if
+    // real deployments vend shorter-lived tokens than this.
+    private static final long VENDED_TOKEN_REFRESH_WINDOW_MS = 60_000L;
+
+    /**
+     * For connector fragments still delivering scan ranges, re-vend any cloud credential that is
+     * about to expire (e.g. a GCP access token) and stash it on the fragment so the next incremental
+     * batch carries it to the BE, which swaps in a fresh filesystem handle. Without this, a scan that
+     * outlives its vended token fails with "AccessToken cannot be null".
+     */
+    private void maybeRefreshVendedCredentials(ExecutionFragment fragment) {
+        Map<Integer, TCloudConfiguration> refreshed = null;
+        for (ScanNode scanNode : fragment.getScanNodes()) {
+            if (!(scanNode instanceof IcebergScanNode)) {
+                continue;
+            }
+            TCloudConfiguration cc = ((IcebergScanNode) scanNode)
+                    .refreshVendedCloudConfigurationIfNearExpiry(VENDED_TOKEN_REFRESH_WINDOW_MS);
+            if (cc != null) {
+                if (refreshed == null) {
+                    refreshed = new HashMap<>();
+                }
+                refreshed.put(scanNode.getId().asInt(), cc);
+            }
+        }
+        fragment.setRefreshedNodeCloudConfigs(refreshed);
     }
 
     private boolean isInternalCancelError(String errMsg) {

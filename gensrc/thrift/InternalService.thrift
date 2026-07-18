@@ -490,6 +490,11 @@ struct TPlanFragmentExecParams {
   // used for global lazy materialization
   75: optional map<Types.TPlanNodeId, i32> per_look_up_num_fetchers
   76: optional map<Types.TPlanNodeId, Descriptors.TNodesInfo> per_fetch_target_nodes
+
+  // Freshly re-vended cloud credentials delivered with an incremental scan-range batch, so a
+  // long-running connector scan can refresh a vended token (e.g. GCP access token) that would
+  // otherwise expire mid-query. Keyed by scan plan node id. Only set on incremental batches.
+  77: optional map<Types.TPlanNodeId, CloudConfiguration.TCloudConfiguration> node_to_cloud_configuration
 }
 
 // Global query parameters assigned by the coordinator.
