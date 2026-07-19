@@ -33,11 +33,11 @@ import com.starrocks.qe.ColocatedBackendSelector;
 import com.starrocks.qe.CoordinatorPreprocessor;
 import com.starrocks.qe.FragmentScanRangeAssignment;
 import com.starrocks.qe.scheduler.ExplainBuilder;
+import com.starrocks.thrift.TCloudConfiguration;
 import com.starrocks.thrift.TEsScanRange;
 import com.starrocks.thrift.THdfsScanRange;
 import com.starrocks.thrift.TInternalScanRange;
 import com.starrocks.thrift.TPlanFragmentDestination;
-import com.starrocks.thrift.TCloudConfiguration;
 import com.starrocks.thrift.TRuntimeFilterParams;
 import com.starrocks.thrift.TScanRangeParams;
 
