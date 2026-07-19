@@ -801,9 +801,9 @@ Status HiveDataSource::_init_scanner(RuntimeState* state) {
 
     const auto& hdfs_scan_node = _provider->_hdfs_scan_node;
     // Use the mid-query refreshed vended cloud configuration when present, so a long scan whose
-    // original vended token expired can still open files with a fresh token.
-    TCloudConfiguration cloud_config_holder;
-    auto fsOptions = FSOptions(_provider->effective_cloud_configuration(&cloud_config_holder));
+    // original vended token expired can still open files with a fresh token. The holder is a
+    // member: file opens are lazy, so this pointer is read after _init_scanner returns.
+    auto fsOptions = FSOptions(_provider->effective_cloud_configuration(&_effective_cloud_configuration));
 
     ASSIGN_OR_RETURN(auto fs, FileSystemFactory::CreateUniqueFromString(native_file_path, fsOptions));
     if (hdfs_scan_node.__isset.column_access_paths && _scanner_ctx.format_scan_context.column_access_paths.empty()) {

@@ -125,6 +125,12 @@ private:
     Status _init_scanner(RuntimeState* state);
     Status _check_all_slots_nullable();
 
+    // Holds the (possibly mid-query refreshed) cloud configuration used to build this source's
+    // filesystem. Must be a member, not an _init_scanner local: HDFS file opens are lazy
+    // (ensureOpened at first read), so FSOptions' pointer into it is dereferenced long after
+    // _init_scanner returns.
+    TCloudConfiguration _effective_cloud_configuration;
+
     // =====================================
     // _scanner_ctx must outlive _pool: pooled JNI scanners may dereference
     // _scanner_ctx during destruction (JniScanner::~JniScanner → close()).
