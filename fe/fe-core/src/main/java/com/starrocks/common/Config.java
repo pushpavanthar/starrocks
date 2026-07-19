@@ -1824,6 +1824,18 @@ public class Config extends ConfigBase {
     public static boolean enable_elastic_scan_execution = false;
 
     /**
+     * A connector scan whose vended cloud credential (e.g. a GCP access token) expires before the
+     * scan finishes fails with a null-token error. During incremental scan-range delivery the
+     * coordinator re-vends the credential when it is within this window of expiry, so the BE keeps
+     * opening files with a fresh token. Incremental delivery typically ends within the first minute
+     * of the query while the scan itself can run much longer, so this window must cover the expected
+     * scan duration, not just clock skew.
+     */
+    @ConfField(mutable = true, comment = "Re-vend a connector scan's cloud credential during " +
+            "incremental scan-range delivery when it expires within this many seconds.")
+    public static long vended_credential_refresh_window_sec = 3000;
+
+    /**
      * In order not to wait too long for create table(index), set a max timeout.
      */
     @ConfField(mutable = true)

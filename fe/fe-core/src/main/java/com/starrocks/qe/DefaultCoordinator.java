@@ -800,10 +800,6 @@ public class DefaultCoordinator extends Coordinator {
         return updatedStates;
     }
 
-    // ponytail: 60s refresh window covers FE/BE clock skew + batch delivery latency; widen only if
-    // real deployments vend shorter-lived tokens than this.
-    private static final long VENDED_TOKEN_REFRESH_WINDOW_MS = 60_000L;
-
     /**
      * For connector fragments still delivering scan ranges, re-vend any cloud credential that is
      * about to expire (e.g. a GCP access token) and stash it on the fragment so the next incremental
@@ -817,7 +813,7 @@ public class DefaultCoordinator extends Coordinator {
                 continue;
             }
             TCloudConfiguration cc = ((IcebergScanNode) scanNode)
-                    .refreshVendedCloudConfigurationIfNearExpiry(VENDED_TOKEN_REFRESH_WINDOW_MS);
+                    .refreshVendedCloudConfigurationIfNearExpiry(Config.vended_credential_refresh_window_sec * 1000L);
             if (cc != null) {
                 if (refreshed == null) {
                     refreshed = new HashMap<>();

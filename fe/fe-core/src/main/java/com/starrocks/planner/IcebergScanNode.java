@@ -287,6 +287,10 @@ public class IcebergScanNode extends ScanNode {
             this.cloudConfiguration = fresh;
             TCloudConfiguration result = new TCloudConfiguration();
             fresh.toThrift(result);
+            String newExpiration = result.getCloud_properties() == null ? null
+                    : result.getCloud_properties().get(GCPCloudConfigurationProvider.TOKEN_EXPIRATION_KEY);
+            LOG.info("re-vended cloud credential for table {}: expiry {} -> {}",
+                    icebergTable.getCatalogTableName(), expiration, newExpiration);
             return result;
         } catch (Exception e) {
             // Best-effort: a failed re-vend just leaves the current token; the scan continues.
