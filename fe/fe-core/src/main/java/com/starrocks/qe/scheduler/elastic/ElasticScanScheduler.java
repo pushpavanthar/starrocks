@@ -76,6 +76,7 @@ public class ElasticScanScheduler {
     private final ExecutionDAG dag;
     private final QueryRuntimeProfile profile;
     private final Supplier<WorkerProvider> workerCapture;
+    private final Supplier<Boolean> queryTerminal;
     private final int scanRangeBatchSize;
     private final List<ExecutionFragment> eligibleFragments;
 
@@ -90,12 +91,13 @@ public class ElasticScanScheduler {
     private int abortedAdds = 0;
 
     public ElasticScanScheduler(JobSpec jobSpec, ExecutionDAG dag, QueryRuntimeProfile profile,
-                                Supplier<WorkerProvider> workerCapture, int scanRangeBatchSize,
-                                List<ExecutionFragment> eligibleFragments) {
+                                Supplier<WorkerProvider> workerCapture, Supplier<Boolean> queryTerminal,
+                                int scanRangeBatchSize, List<ExecutionFragment> eligibleFragments) {
         this.jobSpec = jobSpec;
         this.dag = dag;
         this.profile = profile;
         this.workerCapture = workerCapture;
+        this.queryTerminal = queryTerminal;
         this.scanRangeBatchSize = scanRangeBatchSize;
         this.eligibleFragments = eligibleFragments;
         LOG.info("elastic scan: armed for {} eligible fragment(s), query={}",
@@ -109,6 +111,9 @@ public class ElasticScanScheduler {
      * {@link #deployPreparedInstances(Deployer)} has confirmed the deploy.
      */
     public void prepareInstances() {
+        if (queryTerminal.get()) {
+            return;
+        }
         for (ExecutionFragment fragment : eligibleFragments) {
             if (addedInstances + preparedInstances.size() >= MAX_ADDED_INSTANCES) {
                 return;
@@ -161,6 +166,13 @@ public class ElasticScanScheduler {
             DeploymentResult res = execState.waitForDeploymentCompletion(timeoutMs);
             if (res.getStatusCode() != TStatusCode.OK) {
                 abortDeployedInstance(fragment, instance, execState, res);
+                continue;
+            }
+            // The standard flag/recheck idiom: a cancel that raced this deploy may have fanned out
+            // before the exec state was registered, so the orphan must be cancelled directly here.
+            if (queryTerminal.get()) {
+                abortDeployedInstance(fragment, instance, execState,
+                        new DeploymentResult(TStatusCode.CANCELLED, "query finished during elastic add", null));
                 continue;
             }
             addedInstances++;
@@ -242,10 +254,25 @@ public class ElasticScanScheduler {
             profile.updateElasticScanInfo(addedInstances, abortedAdds);
             return null;
         }
-        FragmentInstance late = dag.registerLateInstance(fragment, worker, beNumber);
-        if (!profile.attachInstance(late.getInstanceId())) {
-            // The query already finished; nothing further will be scheduled for it.
+        FragmentInstance late;
+        try {
+            late = dag.registerLateInstance(fragment, worker, beNumber);
+        } catch (Exception e) {
+            // e.g. the fragment builds runtime filters (guarded again inside registerLateInstance);
+            // an add must abort with compensation, never propagate and fail the query.
+            LOG.warn("elastic scan: late instance registration failed for query {}",
+                    DebugUtil.printId(jobSpec.getQueryId()), e);
             unregisterSenders(fragment, beNumber);
+            abortedWorkerIds.add(worker.getId());
+            abortedAdds++;
+            profile.updateElasticScanInfo(addedInstances, abortedAdds);
+            return null;
+        }
+        if (!profile.attachInstance(late.getInstanceId())) {
+            // The query already finished; nothing further will be scheduled for it. Roll the
+            // instance back out of the DAG so nothing ever assigns ranges to it.
+            unregisterSenders(fragment, beNumber);
+            dag.unregisterLateInstance(fragment, late);
             abortedAdds++;
             return null;
         }
@@ -284,15 +311,21 @@ public class ElasticScanScheduler {
     }
 
     private void unregisterSenders(ExecutionFragment fragment, int beNumber) {
-        // Best-effort compensation; unregistering a never-registered sender is a no-op on the BE.
+        // Best-effort compensation; unregistering a never-registered sender tombstones the
+        // be_number on the BE, so even a register still in flight cannot resurrect it. A lost
+        // unregister leaves a phantom sender that hangs the receiver until query timeout, so
+        // retry once per destination before giving up.
         int exchNodeId = ((DataStreamSink) fragment.getPlanFragment().getSink()).getExchNodeId().asInt();
         for (TPlanFragmentDestination dest : fragment.getDestinations()) {
-            try {
-                BackendServiceClient.getInstance().updateExchangeSenders(
-                        dest.getBrpc_server(), buildRequest(dest, exchNodeId, beNumber, true));
-            } catch (Exception e) {
-                LOG.warn("elastic scan: sender unregistration failed, be_number={} query={}",
-                        beNumber, DebugUtil.printId(jobSpec.getQueryId()), e);
+            for (int attempt = 0; attempt < 2; attempt++) {
+                try {
+                    BackendServiceClient.getInstance().updateExchangeSenders(
+                            dest.getBrpc_server(), buildRequest(dest, exchNodeId, beNumber, true));
+                    break;
+                } catch (Exception e) {
+                    LOG.warn("elastic scan: sender unregistration failed, attempt={} be_number={} query={}",
+                            attempt + 1, beNumber, DebugUtil.printId(jobSpec.getQueryId()), e);
+                }
             }
         }
     }

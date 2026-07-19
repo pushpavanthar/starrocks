@@ -538,6 +538,7 @@ public class DefaultCoordinator extends Coordinator {
         if (!elasticFragments.isEmpty()) {
             elasticScanScheduler = new ElasticScanScheduler(jobSpec, executionDAG, queryProfile,
                     coordinatorPreprocessor::captureCurrentWorkers,
+                    () -> !queryStatus.ok() || returnedAllResults,
                     connectContext.getSessionVariable().getConnectorIncrementalScanRangeNumber(),
                     elasticFragments);
         }

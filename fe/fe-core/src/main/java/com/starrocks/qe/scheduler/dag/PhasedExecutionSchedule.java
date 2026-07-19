@@ -227,6 +227,9 @@ public class PhasedExecutionSchedule implements ExecutionSchedule {
         int deployRound = 1;
         Preconditions.checkState(deployState != null);
         for (DeployState state : deployState) {
+            if (cancelled) {
+                return;
+            }
             deployer.deployFragments(state);
         }
 
