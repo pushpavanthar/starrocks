@@ -14,10 +14,12 @@
 
 package com.starrocks.qe.scheduler.elastic;
 
+import com.google.common.collect.Lists;
 import com.starrocks.common.util.DebugUtil;
 import com.starrocks.planner.DataStreamSink;
 import com.starrocks.planner.OlapScanNode;
 import com.starrocks.planner.ScanNode;
+import com.starrocks.proto.PPlanFragmentCancelReason;
 import com.starrocks.proto.PUniqueId;
 import com.starrocks.proto.PUpdateExchangeSendersRequest;
 import com.starrocks.proto.PUpdateExchangeSendersResult;
@@ -32,18 +34,23 @@ import com.starrocks.qe.scheduler.dag.JobSpec;
 import com.starrocks.rpc.BackendServiceClient;
 import com.starrocks.system.ComputeNode;
 import com.starrocks.thrift.TPlanFragmentDestination;
+import com.starrocks.thrift.TScanRange;
+import com.starrocks.thrift.TScanRangeParams;
 import com.starrocks.thrift.TStatusCode;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+
+import static com.starrocks.qe.scheduler.dag.FragmentInstanceExecState.DeploymentResult;
 
 /**
  * Grows eligible scan fragments onto compute nodes that join the warehouse while the query runs.
@@ -73,6 +80,12 @@ public class ElasticScanScheduler {
     private final List<ExecutionFragment> eligibleFragments;
 
     private final List<FragmentInstance> preparedInstances = new ArrayList<>();
+    // Deployed by the previous round's deployPreparedInstances, awaiting merge into the next
+    // round's deploy states (schedule-thread only, like everything here).
+    private final List<FragmentInstanceExecState> deployedExecStates = new ArrayList<>();
+    // Workers whose add was aborted: one attempt per worker per query, otherwise a persistently
+    // failing worker would be re-detected as "new" and retried every round.
+    private final Set<Long> abortedWorkerIds = new HashSet<>();
     private int addedInstances = 0;
     private int abortedAdds = 0;
 
@@ -85,12 +98,15 @@ public class ElasticScanScheduler {
         this.workerCapture = workerCapture;
         this.scanRangeBatchSize = scanRangeBatchSize;
         this.eligibleFragments = eligibleFragments;
+        LOG.info("elastic scan: armed for {} eligible fragment(s), query={}",
+                eligibleFragments.size(), DebugUtil.printId(jobSpec.getQueryId()));
     }
 
     /**
-     * Registers instances for newly joined workers, BEFORE the round's scan-range assignment, so
-     * the new instances receive their share of ranges and the has_more sentinel. The instances
-     * are not deployed yet; call {@link #harvestPreparedExecStates(Deployer)} after assignment.
+     * Registers instances for newly joined workers, AFTER the round's scan-range assignment: the
+     * new instance's initial deploy carries only a keep-alive sentinel and zero ranges, so an
+     * aborted deploy loses nothing. It joins range assignment from the next round, once
+     * {@link #deployPreparedInstances(Deployer)} has confirmed the deploy.
      */
     public void prepareInstances() {
         for (ExecutionFragment fragment : eligibleFragments) {
@@ -98,10 +114,15 @@ public class ElasticScanScheduler {
                 return;
             }
             ScanNode scanNode = fragment.getScanNodes().iterator().next();
-            if (!hasGrowableWork(scanNode)) {
+            boolean growable = hasGrowableWork(scanNode);
+            List<ComputeNode> newWorkers = growable ? findNewWorkers(fragment) : Collections.emptyList();
+            LOG.debug("elastic scan: round fragment={} hasMore={} growable={} newWorkers={} query={}",
+                    fragment.getFragmentId(), scanNode.hasMoreScanRanges(), growable, newWorkers.size(),
+                    DebugUtil.printId(jobSpec.getQueryId()));
+            if (!growable) {
                 continue;
             }
-            for (ComputeNode worker : findNewWorkers(fragment)) {
+            for (ComputeNode worker : newWorkers) {
                 if (addedInstances + preparedInstances.size() >= MAX_ADDED_INSTANCES) {
                     break;
                 }
@@ -114,26 +135,71 @@ public class ElasticScanScheduler {
     }
 
     /**
-     * Creates exec states for the instances prepared this round, carrying their full deploy
-     * requests (which include the scan ranges assigned after {@link #prepareInstances()}). The
-     * caller appends them to the round's deploy state so they are deployed together with their
-     * peers' incremental requests and carried into subsequent rounds.
+     * Deploys the instances prepared this round with a sentinel-only request (has_more=true, zero
+     * scan ranges), isolated from the coordinator's deploy failure handler: a failed or ambiguous
+     * deploy aborts only the add — best-effort cancel of the maybe-started instance, compensating
+     * sender unregistration (tombstoned on the BE), rollback of the DAG registration — and the
+     * query continues at its current width. Successfully deployed instances are stashed and join
+     * the next round's assignment through {@link #drainDeployedExecStates()}.
      */
-    public List<FragmentInstanceExecState> harvestPreparedExecStates(Deployer deployer) {
+    public void deployPreparedInstances(Deployer deployer) {
         if (preparedInstances.isEmpty()) {
-            return Collections.emptyList();
+            return;
         }
-        List<FragmentInstanceExecState> executions = new ArrayList<>(preparedInstances.size());
+        long timeoutMs = jobSpec.getQueryOptions().getQuery_delivery_timeout() * 1000L;
         for (FragmentInstance instance : preparedInstances) {
-            executions.add(deployer.createLateInstanceExecState(instance));
+            ExecutionFragment fragment = instance.getExecFragment();
+            ScanNode scanNode = fragment.getScanNodes().iterator().next();
+            TScanRangeParams sentinel = new TScanRangeParams();
+            sentinel.setScan_range(new TScanRange());
+            sentinel.setEmpty(true);
+            sentinel.setHas_more(true);
+            instance.addScanRanges(scanNode.getId().asInt(), Lists.newArrayList(sentinel));
+
+            FragmentInstanceExecState execState = deployer.createLateInstanceExecState(instance);
+            execState.deployAsync();
+            DeploymentResult res = execState.waitForDeploymentCompletion(timeoutMs);
+            if (res.getStatusCode() != TStatusCode.OK) {
+                abortDeployedInstance(fragment, instance, execState, res);
+                continue;
+            }
             addedInstances++;
+            deployedExecStates.add(execState);
             LOG.info("elastic scan: added instance {} on worker {} for fragment {} of query {}",
                     DebugUtil.printId(instance.getInstanceId()), instance.getWorkerId(),
                     instance.getFragmentId(), DebugUtil.printId(jobSpec.getQueryId()));
         }
         preparedInstances.clear();
         profile.updateElasticScanInfo(addedInstances, abortedAdds);
-        return executions;
+    }
+
+    /**
+     * Hands over the exec states deployed by the previous round so the caller merges them into the
+     * round's deploy states: they then receive scan ranges with every subsequent batch.
+     */
+    public List<FragmentInstanceExecState> drainDeployedExecStates() {
+        if (deployedExecStates.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<FragmentInstanceExecState> res = new ArrayList<>(deployedExecStates);
+        deployedExecStates.clear();
+        return res;
+    }
+
+    private void abortDeployedInstance(ExecutionFragment fragment, FragmentInstance instance,
+                                       FragmentInstanceExecState execState, DeploymentResult res) {
+        LOG.warn("elastic scan: late instance {} deploy failed on worker {}, aborting add, query={} status={}",
+                DebugUtil.printId(instance.getInstanceId()), instance.getWorkerId(),
+                DebugUtil.printId(jobSpec.getQueryId()), res.getStatus());
+        // An ambiguous timeout may have actually started the instance: best-effort cancel first,
+        // then compensate the sender registration (the unregister tombstones the be_number on the
+        // BE, so even a register still in flight cannot resurrect it).
+        execState.cancelFragmentInstance(PPlanFragmentCancelReason.INTERNAL_ERROR, "elastic scan add aborted");
+        unregisterSenders(fragment, instance.getIndexInJob());
+        abortedWorkerIds.add(instance.getWorkerId());
+        dag.unregisterLateInstance(fragment, instance);
+        profile.finishInstance(instance.getInstanceId());
+        abortedAdds++;
     }
 
     private boolean hasGrowableWork(ScanNode scanNode) {
@@ -157,6 +223,7 @@ public class ElasticScanScheduler {
             WorkerProvider provider = workerCapture.get();
             return provider.getAllWorkers().stream()
                     .filter(worker -> !currentWorkers.contains(worker.getId()))
+                    .filter(worker -> !abortedWorkerIds.contains(worker.getId()))
                     .collect(Collectors.toList());
         } catch (Exception e) {
             // e.g. the warehouse currently has no alive nodes; nothing to add this round.
@@ -170,6 +237,7 @@ public class ElasticScanScheduler {
         int beNumber = dag.reserveLateIndexInJob();
         if (!registerSenders(fragment, beNumber)) {
             unregisterSenders(fragment, beNumber);
+            abortedWorkerIds.add(worker.getId());
             abortedAdds++;
             profile.updateElasticScanInfo(addedInstances, abortedAdds);
             return null;

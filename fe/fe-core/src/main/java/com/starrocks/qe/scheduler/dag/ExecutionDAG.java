@@ -742,6 +742,18 @@ public class ExecutionDAG {
     }
 
     /**
+     * Rolls back a late instance whose deploy failed: removes it from its fragment's instance list
+     * (so later assignment rounds skip it) and from the lookup maps. The burned indexInJob and any
+     * already-added exec state are left in place — report routing and cancel fan-out are keyed
+     * lookups that tolerate entries for instances that never ran.
+     */
+    public void unregisterLateInstance(ExecutionFragment fragment, FragmentInstance instance) {
+        fragment.removeInstanceLate(instance);
+        instanceIdToInstance.remove(instance.getInstanceId());
+        workerIdToNumInstances.merge(instance.getWorkerId(), -1, Integer::sum);
+    }
+
+    /**
      * Reserves the next dense indexInJob without creating an instance yet. An aborted late add
      * simply burns the reserved index — gaps are harmless because report routing looks indices
      * up by exact key, never by density.

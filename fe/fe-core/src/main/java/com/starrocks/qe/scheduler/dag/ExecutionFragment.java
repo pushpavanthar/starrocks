@@ -305,6 +305,18 @@ public class ExecutionFragment {
         instances = copied;
     }
 
+    /**
+     * Drops a late instance whose deploy failed, so subsequent scan-range assignment rounds do not
+     * hand work to an instance that never started. Peers keep their indexInFragment (already wired
+     * into deployed senders); a gap in the sequence is harmless because nothing derives layout from
+     * the live instance list after the first deploy for elastic-eligible fragments.
+     */
+    public void removeInstanceLate(FragmentInstance instance) {
+        List<FragmentInstance> copied = Lists.newArrayList(instances);
+        copied.remove(instance);
+        instances = copied;
+    }
+
     public void shuffleInstances(Random random) {
         Collections.shuffle(instances, random);
         for (int i = 0; i < instances.size(); i++) {

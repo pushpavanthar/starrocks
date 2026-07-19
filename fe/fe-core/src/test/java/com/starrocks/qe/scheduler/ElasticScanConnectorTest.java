@@ -173,7 +173,9 @@ public class ElasticScanConnectorTest extends SchedulerConnectorTestBase {
             }
         }
         Assertions.assertFalse(lateDeploys.isEmpty());
-        Assertions.assertTrue(lateDeploys.get(0).isSetFragment(), "first late deploy must carry the plan fragment");
+        Assertions.assertTrue(lateDeploys.stream().noneMatch(TExecPlanFragmentParams::isSetFragment),
+                "late instance's captured deploys are incremental requests; the sentinel-only "
+                        + "initial deploy bypasses deployFragments");
         List<TScanRangeParams> allLateRanges = new ArrayList<>();
         lateDeploys.forEach(d -> allLateRanges.addAll(collectScanRanges(d.params)));
         Assertions.assertTrue(

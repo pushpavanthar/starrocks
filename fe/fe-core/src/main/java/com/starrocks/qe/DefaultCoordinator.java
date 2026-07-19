@@ -740,10 +740,16 @@ public class DefaultCoordinator extends Coordinator {
         if (!jobSpec.isIncrementalScanRanges()) {
             return updatedStates;
         }
-        // Register instances for workers that joined mid-query BEFORE this round's assignment,
-        // so the new instances receive their share of ranges and the has_more sentinel.
-        if (elasticScanScheduler != null) {
-            elasticScanScheduler.prepareInstances();
+        // Instances added (sentinel-only) at the end of the previous round join this round's
+        // assignment: merge their exec states into an EXISTING deploy state — a separate state
+        // would make the loop below assign the same fragment twice in one round, and the second
+        // assignment resets the instances' live scan-range maps before the first batch's
+        // requests are deployed, silently dropping ranges.
+        if (elasticScanScheduler != null && !deployStates.isEmpty()) {
+            List<FragmentInstanceExecState> lateJoins = elasticScanScheduler.drainDeployedExecStates();
+            if (!lateJoins.isEmpty()) {
+                deployStates.get(0).getThreeStageExecutionsToDeploy().get(1).addAll(lateJoins);
+            }
         }
         for (DeployState state : deployStates) {
 
@@ -791,18 +797,15 @@ public class DefaultCoordinator extends Coordinator {
                 }
             }
         }
-        // Append the instances registered this round: their first request carries the scan ranges
-        // assigned above plus the has_more sentinel. The caller deploys them together with their
-        // peers' incremental requests, and the returned states feed the next round, so the new
-        // instances keep receiving batches.
+        // Add instances for workers that joined mid-query, AFTER this round's assignment: the
+        // initial deploy carries only a keep-alive sentinel and zero ranges (deployed inside the
+        // scheduler, isolated from the query's deploy failure handler — a failed add never fails
+        // the query), and the instance joins assignment from the next round via the entry merge
+        // above. Running after assignment also keeps the seal serialization: if this round
+        // consumed the last ranges, hasMoreScanRanges() is already false and nothing is added.
         if (elasticScanScheduler != null) {
-            List<FragmentInstanceExecState> lateExecutions = elasticScanScheduler.harvestPreparedExecStates(deployer);
-            if (!lateExecutions.isEmpty()) {
-                if (updatedStates.isEmpty()) {
-                    updatedStates.add(new DeployState());
-                }
-                updatedStates.get(0).getThreeStageExecutionsToDeploy().get(1).addAll(lateExecutions);
-            }
+            elasticScanScheduler.prepareInstances();
+            elasticScanScheduler.deployPreparedInstances(deployer);
         }
         return updatedStates;
     }

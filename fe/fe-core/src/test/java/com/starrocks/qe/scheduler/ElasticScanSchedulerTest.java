@@ -184,7 +184,9 @@ public class ElasticScanSchedulerTest extends SchedulerTestBase {
         Assertions.assertTrue(registerIndex >= 0 && registerIndex < lateIndex,
                 "sender registration must precede the late deploy: " + events);
 
-        // The new worker's deploy request is a full deploy carrying scan ranges plus a sentinel.
+        // The sentinel-only initial deploy bypasses deployFragments (it is isolated from the
+        // query's deploy failure handler), so every captured late deploy is an incremental
+        // request from a round after the add was confirmed — carrying real scan ranges.
         List<TExecPlanFragmentParams> lateDeploys = new ArrayList<>();
         int deployIndex = 0;
         for (String event : events) {
@@ -196,14 +198,51 @@ public class ElasticScanSchedulerTest extends SchedulerTestBase {
             }
         }
         Assertions.assertFalse(lateDeploys.isEmpty());
-        TExecPlanFragmentParams first = lateDeploys.get(0);
-        Assertions.assertTrue(first.isSetFragment(), "late deploy must carry the plan fragment");
-        List<TScanRangeParams> ranges = collectScanRanges(first.params);
-        Assertions.assertTrue(ranges.stream().anyMatch(p -> !p.isEmpty()), "late deploy carries scan ranges");
-        Assertions.assertTrue(ranges.stream().anyMatch(TScanRangeParams::isEmpty), "late deploy carries a sentinel");
+        Assertions.assertTrue(lateDeploys.stream().noneMatch(TExecPlanFragmentParams::isSetFragment),
+                "late instance's captured deploys are incremental requests, not full re-deploys");
+        List<TScanRangeParams> ranges = new ArrayList<>();
+        lateDeploys.forEach(d -> ranges.addAll(collectScanRanges(d.params)));
+        Assertions.assertTrue(ranges.stream().anyMatch(p -> !p.isEmpty()),
+                "late instance receives scan ranges from the rounds after joining");
 
         // Every tablet is still delivered exactly once across all instances.
         Assertions.assertEquals(LINEITEM_TABLETS, collectTabletIds(deploys).size());
+    }
+
+    @Test
+    public void testLateDeployFailureKeepsQueryAlive() throws Exception {
+        mockSharedDataLakeScan();
+        mockSenderRegistration();
+        // Only late instances deploy through deployAsync/waitForDeploymentCompletion here (regular
+        // deploys go through the mocked Deployer.deployFragments), so this fails exactly the add.
+        new MockUp<FragmentInstanceExecState>() {
+            @Mock
+            public void deployAsync() {
+            }
+
+            @Mock
+            public FragmentInstanceExecState.DeploymentResult waitForDeploymentCompletion(long timeoutMs) {
+                return new FragmentInstanceExecState.DeploymentResult(
+                        TStatusCode.THRIFT_RPC_ERROR, "injected late-deploy failure", null);
+            }
+        };
+        List<TExecPlanFragmentParams> deploys = captureDeploysAndJoinBackendMidQuery();
+
+        DefaultCoordinator coordinator = startScheduling(SQL);
+
+        // The add was aborted with compensating unregistrations; no round ever handed the new
+        // worker scan ranges, and the fragment's instance list no longer contains it.
+        Assertions.assertTrue(events.stream().anyMatch(e -> e.startsWith("unregister:")), events.toString());
+        Assertions.assertTrue(events.stream().noneMatch(e -> e.equals("deploy:" + NEW_BACKEND_ID)), events.toString());
+        Assertions.assertTrue(coordinator.getExecutionDAG().getFragmentsInPostorder().stream()
+                .flatMap(f -> f.getInstances().stream())
+                .noneMatch(instance -> instance.getWorkerId() == NEW_BACKEND_ID));
+
+        // The query itself survived and still delivered every tablet on its original instances.
+        Assertions.assertTrue(coordinator.getExecStatus().ok());
+        Assertions.assertEquals(LINEITEM_TABLETS, collectTabletIds(deploys).size());
+        Assertions.assertEquals("1", coordinator.getQueryRuntimeProfile().getQueryProfile()
+                .getInfoString("ElasticScanAddsAborted"));
     }
 
     @Test
