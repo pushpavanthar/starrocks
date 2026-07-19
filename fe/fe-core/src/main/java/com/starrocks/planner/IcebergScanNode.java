@@ -72,6 +72,10 @@ public class IcebergScanNode extends ScanNode {
     private final HDFSScanNodePredicates scanNodePredicates = new HDFSScanNodePredicates();
     private ScalarOperator icebergJobPlanningPredicate = null;
     private CloudConfiguration cloudConfiguration = null;
+    // ponytail: 30s cooldown between table-reload attempts, enough to keep a hot delivery loop from
+    // hammering the REST catalog while still retrying promptly once the catalog vends a new token.
+    private static final long VENDED_REFRESH_ATTEMPT_COOLDOWN_MS = 30_000L;
+    private volatile long lastVendedRefreshAttemptMs = 0;
     private IcebergConnectorScanRangeSource scanRangeSource = null;
     private final IcebergTableMORParams tableFullMORParams;
     private final IcebergMORParams morParams;
@@ -270,9 +274,17 @@ public class IcebergScanNode extends ScanNode {
         } catch (NumberFormatException e) {
             return null;
         }
-        if (System.currentTimeMillis() + refreshWindowMs < expiryMs) {
+        long nowMs = System.currentTimeMillis();
+        if (nowMs + refreshWindowMs < expiryMs) {
             return null;
         }
+        // The catalog may legitimately serve the same token again (e.g. Polaris reuses a vended
+        // token until near its expiry), so a wide refresh window would otherwise reload the table
+        // on every delivery round. Rate-limit attempts and only ship a token that actually changed.
+        if (nowMs - lastVendedRefreshAttemptMs < VENDED_REFRESH_ATTEMPT_COOLDOWN_MS) {
+            return null;
+        }
+        lastVendedRefreshAttemptMs = nowMs;
         try {
             MetadataMgr metadataMgr = GlobalStateMgr.getCurrentState().getMetadataMgr();
             metadataMgr.refreshTable(icebergTable.getCatalogName(), icebergTable.getCatalogDBName(),
@@ -289,6 +301,11 @@ public class IcebergScanNode extends ScanNode {
             fresh.toThrift(result);
             String newExpiration = result.getCloud_properties() == null ? null
                     : result.getCloud_properties().get(GCPCloudConfigurationProvider.TOKEN_EXPIRATION_KEY);
+            if (expiration.equals(newExpiration)) {
+                // Same token re-served: shipping it is a no-op on the BE (its filesystem-handle
+                // cache keys on the token value), so skip until the catalog vends a new one.
+                return null;
+            }
             LOG.info("re-vended cloud credential for table {}: expiry {} -> {}",
                     icebergTable.getCatalogTableName(), expiration, newExpiration);
             return result;
